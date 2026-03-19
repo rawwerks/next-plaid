@@ -13,6 +13,9 @@ pub struct IndexState {
     /// CLI version that created/updated this index
     #[serde(default)]
     pub cli_version: String,
+    /// Model identifier used to build this index
+    #[serde(default)]
+    pub model_id: String,
     pub files: HashMap<PathBuf, FileInfo>,
     /// Number of searches performed against this index
     #[serde(default)]
@@ -119,6 +122,7 @@ mod tests {
         );
         let state = IndexState {
             cli_version: "1.0.0".to_string(),
+            model_id: String::new(),
             files,
             search_count: 0,
         };

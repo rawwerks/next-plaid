@@ -6,8 +6,9 @@ use colgrep::{find_parent_index, index_exists};
 
 /// Check if colgrep context should be injected
 /// Returns false if no index exists for this project or any parent project
+/// Uses model=None to match any model's index
 fn should_inject_colgrep_context(project_root: &Path) -> bool {
-    index_exists(project_root) || matches!(find_parent_index(project_root), Ok(Some(_)))
+    index_exists(project_root) || matches!(find_parent_index(project_root, None), Ok(Some(_)))
 }
 
 /// Claude Code session hook - outputs JSON reminder for semantic search

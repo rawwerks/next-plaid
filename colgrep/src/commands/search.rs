@@ -6,8 +6,9 @@ use colored::Colorize;
 
 use colgrep::{
     acquire_index_lock, bre_to_ere, ensure_model, escape_literal_braces, find_parent_index,
-    get_index_dir_for_project, get_vector_index_path, index_exists, is_text_format,
-    path_contains_ignored_dir, Config, IndexBuilder, IndexState, Searcher, DEFAULT_MODEL,
+    get_index_dir_for_project_and_model, get_vector_index_path, index_exists_for_model,
+    is_text_format, path_contains_ignored_dir, Config, IndexBuilder, IndexState, Searcher,
+    DEFAULT_MODEL,
 };
 
 use crate::display::{
@@ -794,8 +795,8 @@ fn search_single_path(
     let batch_size = Some(config.get_batch_size());
 
     // Check if index already exists (suppress model output if so)
-    let has_existing_index =
-        index_exists(&search_path) || find_parent_index(&search_path)?.is_some();
+    let has_existing_index = index_exists_for_model(&search_path, &model)
+        || find_parent_index(&search_path, Some(&model))?.is_some();
 
     // Ensure model is downloaded (quiet if we already have an index)
     let model_path = ensure_model(Some(&model), has_existing_index)?;
@@ -810,7 +811,7 @@ fn search_single_path(
         if is_external_project {
             None
         } else {
-            find_parent_index(&search_path)?
+            find_parent_index(&search_path, Some(&model))?
         }
     };
 
@@ -850,16 +851,16 @@ fn search_single_path(
     // If another process is indexing, skip the update and search the existing index.
     let mut index_locked = false;
     {
-        let mut builder = IndexBuilder::with_options(
+        let mut builder = IndexBuilder::with_model_identity(
             &effective_root,
             &model_path,
+            &model,
             quantized,
             pool_factor,
             parallel_sessions,
             batch_size,
         )?;
         builder.set_auto_confirm(auto_confirm);
-        builder.set_model_name(&model);
 
         // Try non-blocking index update
         match builder.try_index(None, false) {
@@ -906,22 +907,23 @@ fn search_single_path(
                         eprintln!("⚠️  Index corrupted, rebuilding...");
                     }
 
-                    let index_dir = get_index_dir_for_project(&effective_root)?;
+                    let index_dir =
+                        get_index_dir_for_project_and_model(&effective_root, &model)?;
                     if index_dir.exists() {
                         let _lock = acquire_index_lock(&index_dir)?;
                         std::fs::remove_dir_all(&index_dir)?;
                     }
 
-                    let mut new_builder = IndexBuilder::with_options(
+                    let mut new_builder = IndexBuilder::with_model_identity(
                         &effective_root,
                         &model_path,
+                        &model,
                         quantized,
                         pool_factor,
                         parallel_sessions,
                         batch_size,
                     )?;
                     new_builder.set_auto_confirm(auto_confirm);
-                    new_builder.set_model_name(&model);
                     new_builder.index(None, false)?;
                 } else {
                     return Err(e);
@@ -931,7 +933,7 @@ fn search_single_path(
     }
 
     // Verify index exists (at least partially)
-    let index_dir = get_index_dir_for_project(&effective_root)?;
+    let index_dir = get_index_dir_for_project_and_model(&effective_root, &model)?;
     let vector_index_path = get_vector_index_path(&index_dir);
     if !vector_index_path.join("metadata.json").exists() {
         if index_locked {
@@ -961,7 +963,11 @@ fn search_single_path(
                 &model_path,
                 quantized,
             ),
-            None => Searcher::load_with_quantized(&effective_root, &model_path, quantized),
+            None => Searcher::load_from_index_dir_with_quantized(
+                &index_dir,
+                &model_path,
+                quantized,
+            ),
         }
     };
 
@@ -1022,16 +1028,16 @@ fn search_single_path(
                 std::fs::remove_dir_all(target_index_dir)?;
             }
 
-            let mut builder = IndexBuilder::with_options(
+            let mut builder = IndexBuilder::with_model_identity(
                 &effective_root,
                 &model_path,
+                &model,
                 quantized,
                 pool_factor,
                 parallel_sessions,
                 batch_size,
             )?;
             builder.set_auto_confirm(auto_confirm);
-            builder.set_model_name(&model);
             builder.index(None, false)?;
 
             load_searcher()?
@@ -1288,7 +1294,7 @@ fn search_single_path(
     });
 
     // Increment search count
-    let index_dir = get_index_dir_for_project(&effective_root)?;
+    let index_dir = get_index_dir_for_project_and_model(&effective_root, &model)?;
     if let Ok(mut state) = IndexState::load(&index_dir) {
         state.increment_search_count();
         let _ = state.save(&index_dir);

@@ -20,8 +20,8 @@ use crate::parser::{build_call_graph, detect_language, extract_units, CodeUnit, 
 use crate::signal::{is_interrupted, is_interrupted_outside_critical, CriticalSectionGuard};
 
 use paths::{
-    acquire_index_lock, get_index_dir_for_project, get_vector_index_path, try_acquire_index_lock,
-    ProjectMetadata,
+    acquire_index_lock, get_index_dir_for_project, get_index_dir_for_project_and_model,
+    get_vector_index_path, try_acquire_index_lock, ProjectMetadata,
 };
 use state::{get_mtime, hash_file, FileInfo, IndexState};
 
@@ -121,6 +121,35 @@ impl IndexBuilder {
         })
     }
 
+    /// Create an IndexBuilder with a specific model identity.
+    /// The model name is used to compute a model-specific index directory,
+    /// allowing multiple models to maintain separate indexes for the same project.
+    pub fn with_model_identity(
+        project_root: &Path,
+        model_path: &Path,
+        model_name: &str,
+        quantized: bool,
+        pool_factor: Option<usize>,
+        parallel_sessions: Option<usize>,
+        batch_size: Option<usize>,
+    ) -> Result<Self> {
+        // Use model-aware index directory so different models get separate indexes
+        let index_dir = get_index_dir_for_project_and_model(project_root, model_name)?;
+
+        Ok(Self {
+            model: None,
+            model_path: model_path.to_path_buf(),
+            quantized,
+            parallel_sessions,
+            batch_size,
+            project_root: project_root.to_path_buf(),
+            index_dir,
+            pool_factor,
+            auto_confirm: false,
+            model_name: Some(model_name.to_string()),
+        })
+    }
+
     /// Set whether to automatically confirm indexing for large codebases (> 10K code units)
     pub fn set_auto_confirm(&mut self, auto_confirm: bool) {
         self.auto_confirm = auto_confirm;
@@ -129,6 +158,13 @@ impl IndexBuilder {
     /// Set the model name for display purposes
     pub fn set_model_name(&mut self, name: &str) {
         self.model_name = Some(name.to_string());
+    }
+
+    /// Set the model_id on a state before saving, so it's persisted in state.json
+    fn stamp_model_on_state(&self, state: &mut IndexState) {
+        if let Some(ref name) = self.model_name {
+            state.model_id = name.clone();
+        }
     }
 
     /// Ensure the model is created for encoding.
@@ -893,6 +929,7 @@ impl IndexBuilder {
             anyhow::bail!("Indexing interrupted by user");
         }
 
+        self.stamp_model_on_state(&mut new_state);
         new_state.save(&self.index_dir)?;
 
         Ok(UpdateStats {
@@ -1055,6 +1092,7 @@ impl IndexBuilder {
         }
 
         // Save state and project metadata only on successful completion
+        self.stamp_model_on_state(&mut state);
         state.save(&self.index_dir)?;
         ProjectMetadata::new(&self.project_root).save(&self.index_dir)?;
 
@@ -1376,6 +1414,7 @@ impl IndexBuilder {
             anyhow::bail!("Indexing interrupted by user");
         }
 
+        self.stamp_model_on_state(&mut state);
         state.save(&self.index_dir)?;
 
         Ok(UpdateStats {
@@ -2648,6 +2687,11 @@ impl Searcher {
 /// Check if an index exists for the given project
 pub fn index_exists(project_root: &Path) -> bool {
     paths::index_exists(project_root)
+}
+
+/// Check if a model-specific index exists for the given project
+pub fn index_exists_for_model(project_root: &Path, model: &str) -> bool {
+    paths::index_exists_for_model(project_root, model)
 }
 
 /// Prompt the user for confirmation before indexing a large number of code units.
